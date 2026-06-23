@@ -166,6 +166,27 @@ export function initDb(): Database.Database {
       context_window INTEGER,
       created_at     TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS agent_memory (
+      agent_id   TEXT PRIMARY KEY,
+      content    TEXT,
+      updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS feishu_config (
+      id       INTEGER PRIMARY KEY CHECK(id=1),
+      enabled  INTEGER,
+      agent_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS connections (
+      id         TEXT PRIMARY KEY,
+      label      TEXT,
+      type       TEXT,
+      base_url   TEXT,
+      api_key    TEXT,
+      created_at TEXT
+    );
   `);
 
   // 幂等迁移:为旧库安全加列(PRAGMA 检查后跳过 ALTER)
@@ -176,6 +197,17 @@ export function initDb(): Database.Database {
     }
     if (!cols.some(c => c.name === 'model')) {
       _db.exec('ALTER TABLE agent_definitions ADD COLUMN model TEXT');
+    }
+    if (!cols.some(c => c.name === 'connection_id')) {
+      _db.exec('ALTER TABLE agent_definitions ADD COLUMN connection_id TEXT');
+    }
+  }
+
+  // 幂等迁移:app_settings 加 default_connection_id 列
+  {
+    const cols = _db.prepare('PRAGMA table_info(app_settings)').all() as { name: string }[];
+    if (!cols.some(c => c.name === 'default_connection_id')) {
+      _db.exec('ALTER TABLE app_settings ADD COLUMN default_connection_id TEXT');
     }
   }
 

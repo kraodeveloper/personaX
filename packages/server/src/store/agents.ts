@@ -40,6 +40,7 @@ interface AgentRow {
   updated_at: string;
   group_name: string | null;
   model: string | null;
+  connection_id: string | null;
 }
 
 // ---------- 行映射 ----------
@@ -62,6 +63,7 @@ function rowToAgent(row: AgentRow): AgentDefinition {
     updatedAt: row.updated_at,
     group: row.group_name ?? undefined,
     model: row.model ?? undefined,
+    connectionId: row.connection_id ?? undefined,
   };
 }
 
@@ -108,11 +110,11 @@ export function createAgent(input: AgentDefinitionCreate): AgentDefinition {
     INSERT INTO agent_definitions
       (id, name, kind, domain, base_id, base_pin,
        skills_json, mcp_json, tool_policy_json,
-       system_prompt_extra, status, version, updated_at, group_name, model)
+       system_prompt_extra, status, version, updated_at, group_name, model, connection_id)
     VALUES
       (@id, @name, @kind, @domain, @baseId, @basePin,
        @skillsJson, @mcpJson, @toolPolicyJson,
-       @systemPromptExtra, @status, @version, @updatedAt, @groupName, @model)
+       @systemPromptExtra, @status, @version, @updatedAt, @groupName, @model, @connectionId)
   `).run({
     id: agent.id,
     name: agent.name,
@@ -129,6 +131,7 @@ export function createAgent(input: AgentDefinitionCreate): AgentDefinition {
     updatedAt: agent.updatedAt,
     groupName: agent.group ?? null,
     model: agent.model ?? null,
+    connectionId: agent.connectionId ?? null,
   });
 
   return agent;
@@ -169,7 +172,8 @@ export function updateAgent(
       version             = @version,
       updated_at          = @updatedAt,
       group_name          = @groupName,
-      model               = @model
+      model               = @model,
+      connection_id       = @connectionId
     WHERE id = @id
   `).run({
     id: updated.id,
@@ -187,6 +191,7 @@ export function updateAgent(
     updatedAt: updated.updatedAt,
     groupName: updated.group ?? null,
     model: updated.model ?? null,
+    connectionId: updated.connectionId ?? null,
   });
 
   return updated;

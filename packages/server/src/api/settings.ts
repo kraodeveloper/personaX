@@ -7,6 +7,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { AppSettingsUpdateSchema } from '@personax/contracts';
 import { getSettings, updateSettings } from '../store/settings.js';
+import { getConnectionRaw } from '../store/connections.js';
 
 const settingsPlugin: FastifyPluginAsync = async (fastify) => {
   // GET /settings
@@ -27,11 +28,23 @@ const settingsPlugin: FastifyPluginAsync = async (fastify) => {
     return reply.code(200).send(updated);
   });
 
-  // GET /provider
+  // GET /provider — 按默认连接反映认证状态
   fastify.get('/provider', async (_req, reply) => {
+    const conn = getConnectionRaw(getSettings().defaultConnectionId);
+
+    // 默认连接是中转 → api_key;配置完整(base+key)即视为已配置
+    if (conn && conn.type === 'api_relay') {
+      const authConfigured = !!(conn.baseUrl && conn.apiKey);
+      return reply.code(200).send({
+        provider: 'anthropic',
+        authMethod: 'api_key',
+        authConfigured,
+      });
+    }
+
+    // 订阅(或解析不到)→ 看 .env 的订阅/key 凭据
     const hasOAuth = !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
     const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-
     const authMethod = hasOAuth ? 'subscription' : hasApiKey ? 'api_key' : 'none';
     const authConfigured = hasOAuth || hasApiKey;
 

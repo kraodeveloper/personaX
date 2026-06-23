@@ -22,10 +22,12 @@ import { makeCanUseTool } from './canUseTool.js';
 import { buildMcpServers, type ClaimHolder } from './mcp.js';
 import { getVersion } from '../store/bases.js';
 import { getBase } from '../store/bases.js';
+import { getMemory } from '../store/memory.js';
 import { saveRun } from '../store/runs.js';
 import { getSettings } from '../store/settings.js';
 import { insertUsageEvent } from '../store/usage.js';
 import { getModelContextWindow } from '../api/models.js';
+import { buildEnvForAgent } from './env.js';
 
 // 受管 cwd = packages/server 绝对路径(src/sdk/runAgent.ts → 向上两级)
 const __filename = fileURLToPath(import.meta.url);
@@ -131,7 +133,13 @@ async function runAgentSession(
 
   const claimHolder: ClaimHolder = {};
 
-  const append = [rolePrompt(def), capsule, def.systemPromptExtra ?? '']
+  // per-agent 记忆:有非空内容则注入(放在 base capsule 之后)
+  const memory = getMemory(def.id);
+  const memoryBlock = memory.content.trim()
+    ? `## Agent 记忆(你过去记录的笔记)\n${memory.content}`
+    : '';
+
+  const append = [rolePrompt(def), capsule, memoryBlock, def.systemPromptExtra ?? '']
     .filter((s) => s.length > 0)
     .join('\n\n');
 
@@ -152,6 +160,8 @@ async function runAgentSession(
     skills: def.skills,
     model: cfg.worker ? getSettings().workerModel : (def.model || getSettings().defaultModel),
     includePartialMessages: true,
+    // 按连接注入凭据:def.connectionId > 全局默认 > 订阅(worker 无 connectionId → 全局默认)
+    env: buildEnvForAgent(def),
   };
   if (cfg.worker) {
     options.persistSession = false;
@@ -384,6 +394,7 @@ async function repairOnce(
         strictMcpConfig: true,
         settingSources: cfg.worker ? [] : ['project'],
         model: cfg.worker ? getSettings().workerModel : (def.model || getSettings().defaultModel),
+        env: buildEnvForAgent(def),
         ...(cfg.worker ? { persistSession: false } : {}),
       },
     });

@@ -7,6 +7,7 @@ import {
   Wrench,
   Server,
   Settings,
+  Users,
   ChevronRight,
   ChevronDown,
 } from 'lucide-react'
@@ -22,7 +23,7 @@ import { useAgentsStore } from './store/agents'
 
 // ─── 导航配置 ─────────────────────────────────────────────────────────────────
 
-type ViewId = 'run' | 'agents' | 'knowledge' | 'skills' | 'mcp' | 'settings'
+type ViewId = 'run' | 'agents' | 'knowledge' | 'skills' | 'mcp' | 'team' | 'settings'
 
 interface NavItem {
   id: ViewId
@@ -37,6 +38,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'knowledge', label: 'Knowledge', icon: <BookOpen size={15} />,  slice: 3 },
   { id: 'skills',    label: 'Skills',    icon: <Wrench size={15} />,    slice: 4 },
   { id: 'mcp',       label: 'MCP',       icon: <Server size={15} />,    slice: 5 },
+  { id: 'team',      label: 'Team',      icon: <Users size={15} />,     slice: 7 },
   { id: 'settings',  label: 'Settings',  icon: <Settings size={15} />,  slice: 6 },
 ]
 
@@ -328,6 +330,7 @@ const ViewContent: React.FC<{ view: ViewId }> = ({ view }) => {
   if (view === 'knowledge') return <KnowledgePage />
   if (view === 'skills') return <SkillsPage />
   if (view === 'mcp') return <McpPage />
+  if (view === 'team') return <PlaceholderPage name="Team" slice={7} />
   if (view === 'settings') return <SettingsPage />
 
   const item = NAV_ITEMS.find((n) => n.id === view)!

@@ -8,6 +8,7 @@ import { z } from 'zod';
 export const AppSettingsSchema = z.object({
   defaultModel: z.string(), // 全局默认模型(agent 未指定 model 时用)
   workerModel: z.string(),  // 临时 worker 用的模型
+  defaultConnectionId: z.string(), // 全局默认连接 id
 });
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
 

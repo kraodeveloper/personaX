@@ -12,3 +12,6 @@ export * from './schema/model';
 export * from './schema/settings';
 export * from './schema/usage';
 export * from './schema/chat';
+export * from './schema/memory';
+export * from './schema/feishu';
+export * from './schema/connection';

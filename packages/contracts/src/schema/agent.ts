@@ -44,6 +44,7 @@ export const AgentDefinitionSchema = z.object({
   baseId: z.string().optional(), // 绑定知识库(worker 通常无)
   basePin: z.string().optional(), // 固定到某版本;空 = 用 activeVersion
   model: z.string().optional(), // 指定模型;空 = 用 Settings 默认模型(无 kind 兜底)
+  connectionId: z.string().optional(), // 指定连接;空 = 用全局默认连接
   skills: z.array(z.string()), // 绑定 skill 名(→ query 的 skills 选项)
   mcpServers: z.array(z.string()), // 绑定 MCP id(→ query 的 mcpServers)
   toolPolicy: ToolPolicySchema, // 能力边界(供 canUseTool 强制)

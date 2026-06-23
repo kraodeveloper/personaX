@@ -1,4 +1,7 @@
-import type { ModelInfo, AppSettings, AppSettingsUpdate, ProviderStatus } from '@personax/contracts'
+import type {
+  ModelInfo, AppSettings, AppSettingsUpdate, ProviderStatus,
+  FeishuConfig, FeishuConfigUpdate,
+} from '@personax/contracts'
 
 /** API 错误,带后端返回的 error 字符串 */
 export class ApiError extends Error {
@@ -60,4 +63,17 @@ export function updateSettings(body: AppSettingsUpdate): Promise<AppSettings> {
 /** 获取供应商状态 */
 export function getProvider(): Promise<ProviderStatus> {
   return request<ProviderStatus>('/provider')
+}
+
+/** 获取飞书集成配置 */
+export function getFeishuConfig(): Promise<FeishuConfig> {
+  return request<FeishuConfig>('/integrations/feishu/config')
+}
+
+/** 更新飞书集成配置(部分更新) */
+export function updateFeishuConfig(patch: FeishuConfigUpdate): Promise<FeishuConfig> {
+  return request<FeishuConfig>('/integrations/feishu/config', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  })
 }

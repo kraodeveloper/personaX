@@ -27,6 +27,9 @@ import modelsPlugin from './api/models.js';
 import settingsPlugin from './api/settings.js';
 import usagePlugin from './api/usage.js';
 import chatsPlugin from './api/chats.js';
+import memoryPlugin from './api/memory.js';
+import feishuPlugin from './api/feishu.js';
+import connectionsPlugin from './api/connections.js';
 
 // 初始化 SQLite(建表、WAL)
 initDb();
@@ -65,6 +68,15 @@ await fastify.register(usagePlugin);
 
 // 对话(1V1 直聊)路由
 await fastify.register(chatsPlugin);
+
+// per-agent 记忆路由
+await fastify.register(memoryPlugin);
+
+// 飞书集成(壳子)路由
+await fastify.register(feishuPlugin);
+
+// 连接管理(订阅 / API 中转)路由
+await fastify.register(connectionsPlugin);
 
 // 健康检查
 fastify.get('/health', async () => ({ status: 'ok' }));

@@ -12,11 +12,13 @@ import type { Options, SDKMessage, PermissionResult, CanUseTool } from '@anthrop
 import type { AgentDefinition, Chat, ChatEvent } from '@personax/contracts';
 import { getAgent } from '../store/agents.js';
 import { getBase, getVersion } from '../store/bases.js';
+import { getMemory } from '../store/memory.js';
 import { getSettings } from '../store/settings.js';
 import { insertUsageEvent } from '../store/usage.js';
 import { getModelContextWindow } from '../api/models.js';
 import { buildChatMcpServers } from '../sdk/mcp.js';
 import { MANAGED_CWD } from '../sdk/runAgent.js';
+import { buildEnvForAgent } from '../sdk/env.js';
 import { appendMessage, listMessages, touchChat } from '../store/chats.js';
 
 /** 解析最终模型:def.model 优先,否则全局 defaultModel。 */
@@ -107,9 +109,15 @@ export async function runChatTurn(
   const prior = all.slice(0, -1); // 去掉最后一条(= 刚存的最新用户消息)
 
   const capsule = loadBaseCapsule(def);
+  // per-agent 记忆:有非空内容则注入(放在 base capsule 之后)
+  const memory = getMemory(def.id);
+  const memoryBlock = memory.content.trim()
+    ? `## Agent 记忆(你过去记录的笔记)\n${memory.content}`
+    : '';
   const append = [
     chatRolePrompt(def),
     capsule,
+    memoryBlock,
     def.systemPromptExtra ?? '',
     '## 对话历史(延续它,回答用户最新一条)',
     renderHistory(prior),
@@ -132,6 +140,8 @@ export async function runChatTurn(
     settingSources: ['project'],
     skills: def.skills,
     includePartialMessages: true,
+    // 按连接注入凭据:def.connectionId > 全局默认 > 订阅
+    env: buildEnvForAgent(def),
   };
 
   let assistantText = '';

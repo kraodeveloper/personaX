@@ -3,12 +3,13 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Plus, Pencil, Trash2, X, ChevronDown, Tag,
   AlertCircle, Loader2, CheckCircle, Bot, MessageSquare,
-  Send, ChevronRight, PlusCircle,
+  Send, ChevronRight, PlusCircle, NotebookPen, ArrowUpCircle, Link2,
 } from 'lucide-react'
 import type { AgentDefinition, AgentDefinitionCreate, AgentDefinitionUpdate, AgentKind, ChatMessage } from '@personax/contracts'
 import { useAgentsStore } from '../store/agents'
 import { useSettingsStore } from '../store/settings'
 import { ApiError } from '../api/client'
+import { getMemory, saveMemory, promoteMemory } from '../api/memory'
 import { useChatStore } from '../store/chat'
 import { UsageStat } from '../components/UsageStat'
 
@@ -122,6 +123,7 @@ type FormState = {
   baseId: string
   basePin: string
   model: string
+  connectionId: string
   skills: string[]
   mcpServers: string[]
   toolAllow: string[]
@@ -132,7 +134,7 @@ type FormState = {
 
 const emptyForm = (): FormState => ({
   id: '', name: '', kind: 'worker', group: '', domain: '', baseId: '', basePin: '',
-  model: '',
+  model: '', connectionId: '',
   skills: [], mcpServers: [], toolAllow: [], toolConfirm: [],
   systemPromptExtra: '', status: 'active',
 })
@@ -146,6 +148,7 @@ const agentToForm = (a: AgentDefinition): FormState => ({
   baseId: a.baseId ?? '',
   basePin: a.basePin ?? '',
   model: a.model ?? '',
+  connectionId: a.connectionId ?? '',
   skills: a.skills,
   mcpServers: a.mcpServers,
   toolAllow: a.toolPolicy.allow,
@@ -160,12 +163,14 @@ interface AgentCardProps {
   agent: AgentDefinition
   index: number
   highlighted?: boolean
+  connectionLabel?: string
   onEdit: () => void
   onDelete: () => void
   onChat: () => void
+  onMemory: () => void
 }
 
-const AgentCard = React.forwardRef<HTMLDivElement, AgentCardProps>(({ agent, index, highlighted, onEdit, onDelete, onChat }, ref) => {
+const AgentCard = React.forwardRef<HTMLDivElement, AgentCardProps>(({ agent, index, highlighted, connectionLabel, onEdit, onDelete, onChat, onMemory }, ref) => {
   const color = KIND_COLORS[agent.kind]
   const bg = kindBg[agent.kind]
 
@@ -246,6 +251,17 @@ const AgentCard = React.forwardRef<HTMLDivElement, AgentCardProps>(({ agent, ind
           </motion.button>
           <motion.button
             whileTap={{ scale: 0.9 }}
+            onClick={onMemory}
+            className="w-7 h-7 rounded-md flex items-center justify-center transition-colors"
+            style={{ color: '#9ca3af' }}
+            title="记忆 / Memory"
+            onMouseEnter={(e) => { e.currentTarget.style.background = '#fdf8e7'; e.currentTarget.style.color = '#c9a227' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#9ca3af' }}
+          >
+            <NotebookPen size={13} />
+          </motion.button>
+          <motion.button
+            whileTap={{ scale: 0.9 }}
             onClick={onEdit}
             className="w-7 h-7 rounded-md flex items-center justify-center transition-colors"
             style={{ color: '#9ca3af' }}
@@ -301,6 +317,16 @@ const AgentCard = React.forwardRef<HTMLDivElement, AgentCardProps>(({ agent, ind
             {agent.model.split('-').slice(0, 2).join('-')}
           </span>
         )}
+        {connectionLabel && (
+          <span
+            className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded truncate"
+            style={{ background: '#eff6ff', color: '#1d4ed8' }}
+            title={`连接:${connectionLabel}`}
+          >
+            <Link2 size={10} />
+            {connectionLabel}
+          </span>
+        )}
         <div className="ml-auto flex-shrink-0">
           <div
             className="w-2 h-2 rounded-full"
@@ -324,10 +350,11 @@ interface AgentFormProps {
   submitError: string | null
   existingGroups: string[]
   availableModels: { id: string; displayName: string }[]
+  connections: { id: string; label: string }[]
 }
 
 const AgentForm: React.FC<AgentFormProps> = ({
-  initial, isEdit, onSubmit, onClose, submitting, submitError, existingGroups, availableModels,
+  initial, isEdit, onSubmit, onClose, submitting, submitError, existingGroups, availableModels, connections,
 }) => {
   const [form, setForm] = useState<FormState>(initial)
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
@@ -507,6 +534,28 @@ const AgentForm: React.FC<AgentFormProps> = ({
                 <option value="">(默认) — 使用全局默认模型</option>
                 {availableModels.map((m) => (
                   <option key={m.id} value={m.id}>{m.displayName}</option>
+                ))}
+              </select>
+              <ChevronDown
+                size={14}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                style={{ color: '#9ca3af' }}
+              />
+            </div>
+          </div>
+
+          {/* Connection */}
+          <div className="space-y-1.5">
+            {fieldLabel('连接')}
+            <div className="relative">
+              <select
+                value={form.connectionId}
+                onChange={(e) => set('connectionId', e.target.value)}
+                style={{ ...inputStyle, paddingRight: 32, appearance: 'none' as const }}
+              >
+                <option value="">(默认) — 使用全局默认连接</option>
+                {connections.map((c) => (
+                  <option key={c.id} value={c.id}>{c.label}</option>
                 ))}
               </select>
               <ChevronDown
@@ -981,6 +1030,245 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agent, onClose }) => {
   )
 }
 
+// ─── MemoryPanel 弹窗 (per-agent 记忆笔记) ─────────────────────────────────────
+
+interface MemoryPanelProps {
+  agent: AgentDefinition
+  onClose: () => void
+}
+
+const MemoryPanel: React.FC<MemoryPanelProps> = ({ agent, onClose }) => {
+  const [content, setContent] = useState('')
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [promoting, setPromoting] = useState(false)
+  const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  // 加载
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    setLoadError(null)
+    getMemory(agent.id)
+      .then((m) => {
+        if (!alive) return
+        setContent(m.content)
+        setUpdatedAt(m.updatedAt)
+      })
+      .catch((err) => {
+        if (!alive) return
+        setLoadError(err instanceof Error ? err.message : '加载失败')
+      })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [agent.id])
+
+  const flashNotice = (n: { kind: 'ok' | 'err'; text: string }) => {
+    setNotice(n)
+    setTimeout(() => setNotice(null), 3000)
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const m = await saveMemory(agent.id, content)
+      setUpdatedAt(m.updatedAt)
+      flashNotice({ kind: 'ok', text: '记忆已保存' })
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : (err instanceof Error ? err.message : '保存失败')
+      setSaveError(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handlePromote = async () => {
+    setPromoting(true)
+    try {
+      await promoteMemory(agent.id)
+      flashNotice({ kind: 'ok', text: '已生成待审 patch' })
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 400) {
+        flashNotice({ kind: 'err', text: '该 agent 未绑定知识库,无法提升为 patch' })
+      } else {
+        const msg = err instanceof Error ? err.message : '提升失败'
+        flashNotice({ kind: 'err', text: msg })
+      }
+    } finally {
+      setPromoting(false)
+    }
+  }
+
+  const color = KIND_COLORS[agent.kind]
+  const bg = kindBg[agent.kind]
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.3)', backdropFilter: 'blur(4px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 12 }}
+        transition={{ duration: 0.2, ease: 'easeOut' }}
+        className="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto flex flex-col"
+        style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.15)', border: '1px solid #e5e7eb' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 标题栏 */}
+        <div
+          className="flex items-center gap-3 px-6 py-4 shrink-0"
+          style={{ borderBottom: '1px solid #f3f4f6' }}
+        >
+          <div
+            className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+            style={{ background: bg, border: `1px solid ${color}25` }}
+          >
+            <NotebookPen size={15} style={{ color }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="font-semibold text-base truncate" style={{ color: '#111827' }}>
+              记忆 · {agent.name}
+            </h2>
+            <p className="text-xs truncate" style={{ color: '#9ca3af' }}>
+              {updatedAt
+                ? `更新于 ${new Date(updatedAt).toLocaleString('zh-CN')}`
+                : 'per-agent 可编辑笔记'}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-7 h-7 rounded-md flex items-center justify-center transition-colors"
+            style={{ color: '#9ca3af' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = '#f3f4f6'; e.currentTarget.style.color = '#374151' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#9ca3af' }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          {/* 说明小字 */}
+          <p className="text-xs leading-relaxed" style={{ color: '#9ca3af' }}>
+            这份记忆会注入该 agent 的上下文;可经治理提升进版本化 Knowledge。支持 Markdown。
+          </p>
+
+          {/* 加载态 */}
+          {loading && (
+            <div className="flex items-center justify-center gap-2 py-16" style={{ color: '#9ca3af' }}>
+              <Loader2 size={18} className="animate-spin" style={{ color: '#c9a227' }} />
+              <span className="text-sm">加载中…</span>
+            </div>
+          )}
+
+          {/* 加载错误 */}
+          {!loading && loadError && (
+            <div
+              className="flex items-start gap-2 p-3 rounded-lg text-sm"
+              style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626' }}
+            >
+              <AlertCircle size={15} className="mt-0.5 flex-shrink-0" />
+              <span>{loadError}</span>
+            </div>
+          )}
+
+          {/* 编辑器 */}
+          {!loading && !loadError && (
+            <>
+              <textarea
+                rows={14}
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder={'# 关于该 agent 的记忆\n\n在这里记录该 agent 应长期记住的信息…'}
+                className="w-full"
+                style={{
+                  background: '#ffffff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 6,
+                  padding: '10px 12px',
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                  color: '#111827',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  outline: 'none',
+                  resize: 'vertical',
+                }}
+              />
+
+              {/* 保存错误 */}
+              {saveError && (
+                <div
+                  className="flex items-start gap-2 p-3 rounded-lg text-sm"
+                  style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626' }}
+                >
+                  <AlertCircle size={15} className="mt-0.5 flex-shrink-0" />
+                  <span>{saveError}</span>
+                </div>
+              )}
+
+              {/* 行内提示 */}
+              <AnimatePresence>
+                {notice && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 4 }}
+                    className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg"
+                    style={
+                      notice.kind === 'ok'
+                        ? { background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#16a34a' }
+                        : { background: '#fffbeb', border: '1px solid #fde68a', color: '#92700d' }
+                    }
+                  >
+                    {notice.kind === 'ok'
+                      ? <CheckCircle size={14} />
+                      : <AlertCircle size={14} />}
+                    {notice.text}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Actions */}
+              <div
+                className="flex items-center justify-between gap-3 pt-3"
+                style={{ borderTop: '1px solid #f3f4f6' }}
+              >
+                <button
+                  type="button"
+                  onClick={handlePromote}
+                  disabled={promoting || saving}
+                  className="btn-ghost text-sm flex items-center gap-1.5"
+                  title="将当前记忆提升为待审 Knowledge patch"
+                >
+                  {promoting
+                    ? <Loader2 size={14} className="animate-spin" />
+                    : <ArrowUpCircle size={14} />}
+                  提升为 Knowledge patch
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="btn-primary text-sm flex items-center gap-2"
+                >
+                  {saving && <Loader2 size={14} className="animate-spin" />}
+                  保存
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  )
+}
+
 // ─── AgentsPage 主组件 ────────────────────────────────────────────────────────
 
 type DialogState =
@@ -994,10 +1282,11 @@ const AgentsPage: React.FC = () => {
     agents, loading, error, fetchAll, create, update, remove,
     focusAgentId, filterGroup, setFocusAgent, setFilterGroup,
   } = useAgentsStore()
-  const { models: availableModels, fetchAll: fetchModels } = useSettingsStore()
+  const { models: availableModels, connections, fetchAll: fetchModels } = useSettingsStore()
   const { reset: resetChat } = useChatStore()
   const [dialog, setDialog] = useState<DialogState>({ type: 'none' })
   const [chatAgent, setChatAgent] = useState<AgentDefinition | null>(null)
+  const [memoryAgent, setMemoryAgent] = useState<AgentDefinition | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
@@ -1014,6 +1303,9 @@ const AgentsPage: React.FC = () => {
   const existingGroups = Array.from(
     new Set(agents.map((a) => a.group).filter((g): g is string => !!g))
   )
+
+  // connectionId -> label 查表(卡片展示用)
+  const connectionLabelById = new Map(connections.map((c) => [c.id, c.label]))
 
   // Respond to focusAgentId from sidebar
   useEffect(() => {
@@ -1066,6 +1358,7 @@ const AgentsPage: React.FC = () => {
         baseId: form.baseId || undefined,
         basePin: form.basePin || undefined,
         model: form.model || undefined,
+        connectionId: form.connectionId || undefined,
         skills: form.skills,
         mcpServers: form.mcpServers,
         toolPolicy: {
@@ -1214,9 +1507,11 @@ const AgentsPage: React.FC = () => {
                   agent={agent}
                   index={i}
                   highlighted={highlightId === agent.id}
+                  connectionLabel={agent.connectionId ? connectionLabelById.get(agent.connectionId) : undefined}
                   onEdit={() => { setSubmitError(null); setDialog({ type: 'edit', agent }) }}
                   onDelete={() => { setSubmitError(null); setDialog({ type: 'delete', agent }) }}
                   onChat={() => { resetChat(); setChatAgent(agent) }}
+                  onMemory={() => setMemoryAgent(agent)}
                 />
               ))}
             </AnimatePresence>
@@ -1237,6 +1532,7 @@ const AgentsPage: React.FC = () => {
             submitError={submitError}
             existingGroups={existingGroups}
             availableModels={availableModels}
+            connections={connections}
           />
         )}
         {dialog.type === 'delete' && (
@@ -1271,6 +1567,17 @@ const AgentsPage: React.FC = () => {
               onClose={() => { resetChat(); setChatAgent(null) }}
             />
           </>
+        )}
+      </AnimatePresence>
+
+      {/* 记忆弹窗 */}
+      <AnimatePresence>
+        {memoryAgent && (
+          <MemoryPanel
+            key={`memory-${memoryAgent.id}`}
+            agent={memoryAgent}
+            onClose={() => setMemoryAgent(null)}
+          />
         )}
       </AnimatePresence>
     </div>
