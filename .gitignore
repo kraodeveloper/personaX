@@ -3,6 +3,8 @@ dist/
 *.log
 .DS_Store
 packages/server/data/*.db
+packages/server/data/*.db-shm
+packages/server/data/*.db-wal
 packages/server/data/bases/
 .env
 .env.local
