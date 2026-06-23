@@ -1,0 +1,16 @@
+{
+  "name": "personax",
+  "private": true,
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "dev:server": "pnpm --filter @personax/server dev",
+    "dev:web": "pnpm --filter @personax/web dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,1277 @@
+## 1. 点1：记忆层
+
+### 我草案的致命问题
+
+**1. “embedding + recency + task-type top-K”会把记忆层做成一个看似聪明、实际不可控的黑箱。**
+
+个人单用户场景里，最危险的不是召回率低，而是**召回了看起来相关但语义错位的旧上下文**。embedding 很容易把“相似主题”当成“当前有效事实”，比如：
+
+- “我以前在 A 项目里用 Postgres”被召回到 B 项目，模型误以为 B 也用 Postgres。
+- “我曾经不喜欢 Tailwind”被召回成稳定偏好，但你后来已经接受它。
+- “上次讨论过 personaX 要多 agent”被召回，虽然现在已经锁定单 persona。
+
+embedding 擅长找语义相近内容，不擅长判断：
+
+- 是否仍然有效；
+- 适用于哪个项目；
+- 是事实、偏好、临时想法、还是已废弃方案；
+- 是用户明确确认，还是模型自己总结出来的推断。
+
+如果没有 provenance、scope、validity、confidence、contradiction handling，embedding 只会让污染更隐蔽。
+
+**2. “新值覆盖旧值”太粗暴，会丢掉真实历史和条件差异。**
+
+偏好和事实不是 key-value store。
+
+例如：
+
+```text
+用户喜欢中文回答。
+用户在代码 review 时喜欢英文注释。
+用户在产品文案里喜欢简洁中文。
+用户曾经说“不喜欢 React”，但 personaX 项目已经锁定 React。
+```
+
+这些不能简单按“新覆盖旧”处理。更合理的是：
+
+- 新事实使旧事实 `superseded`；
+- 不同 scope 下共存；
+- 旧事实保留 provenance；
+- 冲突需要明确类型：真实变更、上下文差异、模型误提炼、用户临时让步。
+
+**3. TTL 不适合人格和偏好，适合缓存和任务状态。**
+
+TTL 对三类东西的语义完全不同：
+
+- 临时任务状态：可以短 TTL。
+- 项目决策：不能按时间自动过期，只能被替代或废弃。
+- 用户偏好：通常长期有效，但需要可修正。
+- 事实记忆：可能长期有效，但必须有 `last_confirmed_at` 和 `validity`。
+
+如果你用统一 TTL，会出现两个问题：
+
+- 稳定偏好被过期掉；
+- 错误事实在 TTL 内持续污染。
+
+应该用 `valid_from`、`valid_until`、`status`、`confidence`、`source_count`、`last_seen_at`，而不是单一 TTL。
+
+**4. distilled facts 是最大污染源，不是记忆层的“干净层”。**
+
+“提炼事实”听起来像净化，实际上是**生成式压缩**，天然会引入：
+
+- 过度概括；
+- 把一次性表达变成稳定偏好；
+- 把模型自己的建议误存成用户意图；
+- 把讨论中的候选方案误存成已决策方案；
+- 把否定句、反事实、废案提炼成正向事实。
+
+如果没有证据链和审批机制，distilled facts 会比原始日志更危险。原始日志至少还保留上下文，提炼层一旦污染，会被反复注入 system prompt，形成自我强化。
+
+**5. task-type 过滤容易过早僵化。**
+
+“coding / writing / planning / debugging”这种 task-type 可以做加权，但不应该做硬过滤。很多个人记忆是跨任务的：
+
+- “用户喜欢直接、批判性、不要客套”适用于所有任务。
+- “personaX 是本地优先，不上云”适用于架构、代码、文档。
+- “用户不喜欢多 agent 平台化”适用于设计、实现、PRD、README。
+
+硬过滤会漏掉全局约束。更好的做法是 `scope + salience + applicability`，而不是简单 task type。
+
+**6. context-builder 每次塞 top-K 会导致 prompt 污染和注意力浪费。**
+
+“top-K 相关 + persona”太粗。应该分层注入：
+
+- 永久核心 persona：很短，稳定，人工确认。
+- 当前项目 capsule：中短，人工或高置信生成。
+- 本轮任务相关 memories：少量，带日期、scope、置信度。
+- 原始证据片段：只在需要时追加。
+- 不确定候选：不要注入为事实，可以作为“possible relevant notes”。
+
+否则 system prompt 会越来越像垃圾场，模型无法区分硬约束、软偏好、历史记录、候选想法。
+
+---
+
+### embedding 是否过度工程？
+
+**第一版我会反对默认上 embedding。**
+
+对 personaX 这种本地单用户、数据量不大的项目，默认方案应该是：
+
+```text
+SQLite FTS5 + 结构化标签 + scope + recency + salience + 人工确认状态
+```
+
+理由很直接：
+
+- 个人记忆里大量查询是实体型和约束型，不是语义型。
+- “personaX 本地优先 Go SQLite React”这种东西，关键词/标签比 embedding 更稳。
+- 用户偏好、项目决策、长期约束更适合结构化检索。
+- embedding 会带来模型、维度、索引、版本迁移、分发体积、可解释性问题。
+- SQLite FTS5 是标准能力，部署稳定，debug 容易。
+
+embedding 可以作为第二阶段增强，但不应该是核心依赖。
+
+我会这么判断：
+
+| 数据类型 | 首选检索 |
+|---|---|
+| 用户偏好 | 结构化 key/scope |
+| persona 配置 | 固定加载 |
+| 项目决策 | project_id + tags + FTS |
+| 原始交互日志 | FTS + 时间 |
+| 长文本笔记 | FTS，必要时 embedding |
+| 模糊主题回忆 | embedding 可选 |
+| “我之前怎么说的” | FTS + 时间线，比 embedding 更可靠 |
+
+所以结论是：
+
+**不要先做向量记忆。先把 schema、provenance、确认流、失效机制做好。embedding 是插件，不是地基。**
+
+---
+
+### distilled facts 由谁、何时、怎么提炼？
+
+我的建议：**不要让执行核静默写入 durable memory。**
+
+Claude Code / cc-ds 可以参与“提出候选记忆”，但不应该直接改长期记忆。执行核是商品执行器，它的目标是完成当前任务，不是维护你的长期身份数据库。它会有强烈倾向把当前上下文总结成“有用事实”，但这正是污染来源。
+
+更稳的流程是三层写入：
+
+```text
+raw event -> candidate memory -> confirmed memory
+```
+
+#### 在线写入：只写原始事件和轻量 metadata
+
+每轮交互结束，立即写：
+
+- user message；
+- assistant response；
+- tool/action summary，如果有；
+- active project；
+- timestamp；
+- explicit tags；
+- task type；
+- referenced files/modules，如果有；
+- session id。
+
+在线阶段不要做复杂总结。最多做轻量分类：
+
+```json
+{
+  "session_id": "s_123",
+  "task_type": "architecture_review",
+  "project": "personaX",
+  "entities": ["personaX", "memory layer", "persona model"],
+  "tags": ["architecture", "memory", "local-first"]
+}
+```
+
+#### 离线/空闲提炼：生成候选，不直接入库
+
+在以下时机触发：
+
+- 会话结束后；
+- 用户显式点击“提炼本次记忆”；
+- 每 N 条事件后；
+- 每天首次启动时处理未提炼 backlog；
+- 项目 capsule 过期或冲突时。
+
+提炼器输出候选，而不是事实：
+
+```json
+{
+  "type": "project_decision",
+  "scope": {
+    "project": "personaX"
+  },
+  "claim": "personaX is a local-first single-user assistant wrapper around Claude Code via ACP.",
+  "evidence_event_ids": ["evt_101", "evt_102"],
+  "confidence": 0.92,
+  "status": "candidate",
+  "needs_user_confirmation": true,
+  "reason": "This is an architectural commitment, not a transient discussion point."
+}
+```
+
+#### 什么可以自动入库？
+
+我会非常保守。
+
+可以自动入库的：
+
+- 低风险、高重复、非身份类事实；
+- 用户明确说“记住 X”；
+- 项目内反复出现且没有冲突的事实；
+- 工具可验证的事实，例如 repo 技术栈，但要标注来源。
+
+不应该自动入库的：
+
+- 偏好；
+- 人格风格；
+- 身份信息；
+- 长期项目原则；
+- 密码、token、隐私敏感内容；
+- 用户只是临时让 AI 这么做的指令；
+- 模型自己推断出来的心理状态。
+
+偏好尤其应该走确认：
+
+```text
+候选：你似乎偏好“直接、批判性、少客套”的架构评审风格。
+操作：[接受] [改写] [忽略] [仅本项目适用]
+```
+
+#### 怎么防错误事实污染？
+
+需要五个机制，缺一不可：
+
+1. **所有 distilled memory 必须有 evidence。**
+
+没有 `evidence_event_ids` 的长期事实不许入库。
+
+2. **事实和推断分开。**
+
+```text
+fact: 用户明确说 personaX 不做多 agent 平台。
+inference: 用户可能偏好收敛的产品边界。
+```
+
+推断默认不能注入为事实。
+
+3. **候选状态。**
+
+```text
+candidate -> confirmed -> active
+candidate -> rejected
+active -> superseded
+active -> deprecated
+active -> disputed
+```
+
+4. **注入时显示状态。**
+
+不要只塞自然语言，要让执行核知道可靠性：
+
+```text
+Relevant confirmed memories:
+- [project_decision, confirmed, 2026-06-21] personaX is local-first, single-user, Go + SQLite + React.
+- [preference, confirmed, global] User prefers direct critical design review over polite high-level feedback.
+
+Possible but unconfirmed notes:
+- [candidate, 2026-06-21] User may prefer static-first persona evolution.
+```
+
+5. **冲突不自动覆盖，进入 conflict queue。**
+
+如果新候选和旧记忆冲突，标为：
+
+```text
+conflict_type = "supersedes" | "scope_difference" | "contradiction" | "ambiguous"
+```
+
+只有明确是 supersedes，才让旧值 inactive。
+
+---
+
+### SQLite 下要不要 sqlite-vec？
+
+我的建议：
+
+**第一版别依赖 sqlite-vec；schema 预留 embedding 表即可。**
+
+sqlite-vec 的方向是合理的：本地、SQLite 内向量检索、和你的 local-first 架构匹配。但它会引入实际工程成本：
+
+- 扩展打包；
+- Windows/macOS/Linux 分发；
+- Go SQLite driver 集成；
+- 迁移和版本兼容；
+- embedding 模型选择；
+- embedding 维度变更；
+- 重建索引；
+- 可解释性下降。
+
+如果你现在的目标是做一个稳定个人分身，最短路径不是向量库，而是**记忆治理**。
+
+我会这么做：
+
+- v0：FTS5 + tags + scope + recency + salience。
+- v1：抽象 `retrieval_candidates` 接口。
+- v1.5：可选 sqlite-vec，只对 `episodic_chunks` 和长文本 notes 建 embedding。
+- 永远不要让 vector score 单独决定注入，只作为 candidate source 之一。
+
+也就是：
+
+```text
+vector retrieval = recall helper
+structured memory = truth layer
+```
+
+不要反过来。
+
+---
+
+## 替代设计
+
+### 总体原则
+
+我建议把记忆系统拆成四层，而不是三层：
+
+```text
+1. Raw Events        原始交互，不争论真实性
+2. Memory Candidates 待确认候选，由提炼器生成
+3. Canonical Memory  已确认/高置信长期记忆
+4. Context Capsules  面向注入的短摘要，可重建
+```
+
+关键区别：
+
+- raw events 是证据；
+- candidates 是模型提出的草稿；
+- canonical memory 才是长期事实；
+- context capsule 是为了 prompt 注入，不是事实源。
+
+---
+
+### Schema 草图
+
+下面是偏 SQLite 的简化设计。
+
+#### sessions
+
+```sql
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  project_id TEXT,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  task_type TEXT,
+  summary TEXT,
+  metadata_json TEXT
+);
+```
+
+#### events
+
+```sql
+CREATE TABLE events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL, -- user | assistant | system | tool
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  project_id TEXT,
+  task_type TEXT,
+  metadata_json TEXT,
+
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+```
+
+#### event_chunks
+
+用于 FTS 和可选 embedding。不要直接对整段会话做检索，粒度太粗。
+
+```sql
+CREATE TABLE event_chunks (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  project_id TEXT,
+  content TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  metadata_json TEXT,
+
+  FOREIGN KEY (event_id) REFERENCES events(id)
+);
+
+CREATE VIRTUAL TABLE event_chunks_fts USING fts5(
+  content,
+  project_id UNINDEXED,
+  session_id UNINDEXED,
+  content='event_chunks',
+  content_rowid='rowid'
+);
+```
+
+实际 SQLite 里 FTS rowid 设计要注意，这里只是草图。
+
+#### projects
+
+```sql
+CREATE TABLE projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+```
+
+#### memory_items
+
+这是核心表。
+
+```sql
+CREATE TABLE memory_items (
+  id TEXT PRIMARY KEY,
+
+  kind TEXT NOT NULL,
+  -- preference | persona_rule | project_fact | project_decision |
+  -- user_fact | workflow | constraint | glossary | relationship | note
+
+  scope_type TEXT NOT NULL,
+  -- global | project | domain | session
+
+  scope_id TEXT,
+  -- null for global, project id for project scope
+
+  key TEXT,
+  -- optional canonical key, e.g. "response_style", "personaX.architecture.local_first"
+
+  value TEXT NOT NULL,
+  -- short canonical statement
+
+  value_json TEXT,
+  -- structured payload when useful
+
+  status TEXT NOT NULL,
+  -- candidate | active | rejected | superseded | deprecated | disputed
+
+  confidence REAL NOT NULL DEFAULT 0.0,
+  salience REAL NOT NULL DEFAULT 0.5,
+
+  source TEXT NOT NULL,
+  -- user_explicit | model_extracted | model_inferred | tool_observed | imported
+
+  confirmation TEXT NOT NULL,
+  -- explicit | implicit_repeated | unconfirmed | rejected
+
+  valid_from TEXT,
+  valid_until TEXT,
+  last_seen_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+
+  supersedes_id TEXT,
+  metadata_json TEXT
+);
+```
+
+几个字段很重要：
+
+- `kind` 决定怎么解释；
+- `scope_type/scope_id` 决定适用范围；
+- `status` 决定能否注入；
+- `source` 和 `confirmation` 决定可靠性；
+- `salience` 决定是否值得进入 prompt；
+- `valid_until` 不是 TTL，而是语义有效期；
+- `supersedes_id` 保留历史链。
+
+#### memory_evidence
+
+```sql
+CREATE TABLE memory_evidence (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL,
+  event_id TEXT,
+  chunk_id TEXT,
+  quote TEXT,
+  evidence_type TEXT NOT NULL,
+  -- explicit_statement | repeated_behavior | tool_observation | user_confirmation
+
+  created_at TEXT NOT NULL,
+
+  FOREIGN KEY (memory_id) REFERENCES memory_items(id),
+  FOREIGN KEY (event_id) REFERENCES events(id),
+  FOREIGN KEY (chunk_id) REFERENCES event_chunks(id)
+);
+```
+
+`quote` 只存短证据片段，不要复制大段内容。
+
+#### memory_tags
+
+```sql
+CREATE TABLE memory_tags (
+  memory_id TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (memory_id, tag)
+);
+```
+
+#### memory_conflicts
+
+```sql
+CREATE TABLE memory_conflicts (
+  id TEXT PRIMARY KEY,
+  existing_memory_id TEXT NOT NULL,
+  candidate_memory_id TEXT NOT NULL,
+  conflict_type TEXT NOT NULL,
+  -- contradiction | supersedes | scope_difference | duplicate | ambiguous
+
+  resolution TEXT,
+  -- unresolved | keep_existing | accept_candidate | merge | scope_split | reject_candidate
+
+  resolved_at TEXT,
+  created_at TEXT NOT NULL
+);
+```
+
+#### context_capsules
+
+```sql
+CREATE TABLE context_capsules (
+  id TEXT PRIMARY KEY,
+  capsule_type TEXT NOT NULL,
+  -- global_persona | project_context | domain_context
+
+  scope_type TEXT NOT NULL,
+  scope_id TEXT,
+
+  content TEXT NOT NULL,
+  token_estimate INTEGER,
+  source_memory_ids_json TEXT NOT NULL,
+
+  status TEXT NOT NULL,
+  -- active | stale | rebuilding | archived
+
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT
+);
+```
+
+capsule 是派生物。它可以删掉重建，不应成为唯一事实来源。
+
+#### optional memory_embeddings
+
+先预留，不启用也没关系。
+
+```sql
+CREATE TABLE memory_embeddings (
+  owner_type TEXT NOT NULL,
+  -- memory_item | event_chunk | context_capsule
+
+  owner_id TEXT NOT NULL,
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  embedding BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+
+  PRIMARY KEY (owner_type, owner_id, model)
+);
+```
+
+---
+
+### 提炼流程
+
+#### Step 1：事件落库
+
+每次用户/助手交互后写入 `events`，并切 chunk 写入 `event_chunks`。
+
+#### Step 2：轻量分类
+
+同步或异步都可以，输出：
+
+```json
+{
+  "project_id": "personaX",
+  "task_type": "design_review",
+  "entities": ["personaX", "memory layer", "persona model"],
+  "tags": ["architecture", "memory", "persona"]
+}
+```
+
+这一步可以用规则 + 少量 LLM。错误成本低。
+
+#### Step 3：候选提炼
+
+空闲时运行 extractor。输入是最近 session 的 compact transcript，加上已有相关 memory，输出严格 JSON：
+
+```json
+{
+  "candidates": [
+    {
+      "kind": "project_decision",
+      "scope_type": "project",
+      "scope_id": "personaX",
+      "key": "architecture.execution_core",
+      "value": "personaX treats the execution core as a commodity and delegates agent loop/tool use to Claude Code via ACP.",
+      "source": "user_explicit",
+      "confirmation": "explicit",
+      "confidence": 0.95,
+      "salience": 0.9,
+      "tags": ["architecture", "execution-core", "ACP"],
+      "evidence": [
+        {
+          "event_id": "evt_1",
+          "quote": "执行核是商品，不自研 agent loop / 工具调用，全交给 Claude Code（经 ACP）"
+        }
+      ],
+      "needs_user_confirmation": false
+    }
+  ]
+}
+```
+
+这里有一个关键规则：
+
+**extractor 只能提炼用户说过的东西，不能提炼助手建议为用户偏好。**
+
+助手的建议最多生成 `note` 或 `candidate`，不能生成 confirmed memory。
+
+#### Step 4：合并/冲突检测
+
+用结构化规则优先：
+
+- same `scope_type + scope_id + kind + key`：可能覆盖或更新；
+- same value but different wording：duplicate；
+- negation/opposite tags：conflict；
+- old status active + new explicit source：candidate may supersede old；
+- global vs project：可能是 scope split，不是冲突。
+
+LLM 可以辅助判断冲突类型，但最终状态机在宿主 Go 里执行。
+
+#### Step 5：入库策略
+
+建议如下：
+
+| 候选类型 | 默认处理 |
+|---|---|
+| 用户明确说“记住” | 直接 active |
+| 架构锁定判断 | candidate 或 active，取决于是否原文明确 |
+| 普通项目事实 | 高置信可 active |
+| 用户偏好 | candidate，等待确认 |
+| 人格风格 | candidate，等待确认 |
+| 敏感信息 | 默认 reject 或加密专门存储 |
+| 模型推断 | candidate，不注入为事实 |
+| 冲突项 | conflict queue |
+
+#### Step 6：用户确认
+
+不要做一个烦人的确认流。可以做“记忆 inbox”：
+
+```text
+待确认记忆
+- 你偏好直接、批判性的技术评审，不需要客套。
+  来源：2026-06-21 personaX 设计评审
+  [接受] [改写] [仅 personaX] [忽略]
+
+- personaX 不做多 agent 平台，采用单 persona + 按需 skill。
+  来源：用户明确锁定设计判断
+  [接受] [改写] [废弃]
+```
+
+---
+
+### 检索流程
+
+我建议不要叫“top-K 检索”，而叫“context assembly”。流程如下。
+
+#### Step 1：识别当前任务
+
+输入当前用户消息、当前 session、项目上下文，得到：
+
+```json
+{
+  "project_id": "personaX",
+  "task_type": "architecture_review",
+  "intent": "critique_and_design",
+  "entities": ["memory layer", "persona model"],
+  "needs": ["project_decisions", "user_preferences", "related_prior_discussions"]
+}
+```
+
+#### Step 2：固定加载核心 persona
+
+从 `memory_items` 取：
+
+```sql
+WHERE kind IN ('persona_rule', 'preference')
+AND scope_type = 'global'
+AND status = 'active'
+AND confirmation = 'explicit'
+ORDER BY salience DESC
+LIMIT ?
+```
+
+这部分不依赖 query 相似度。
+
+#### Step 3：加载项目 capsule
+
+如果 `project_id` 存在，加载 active project capsule：
+
+```sql
+WHERE capsule_type = 'project_context'
+AND scope_type = 'project'
+AND scope_id = ?
+AND status = 'active'
+```
+
+capsule 应包含：
+
+- 项目是什么；
+- 锁定决策；
+- 当前边界；
+- 最近重要变更；
+- 不要做什么。
+
+#### Step 4：结构化 memory 检索
+
+按 scope 和标签检索：
+
+```sql
+WHERE status = 'active'
+AND (
+  scope_type = 'global'
+  OR (scope_type = 'project' AND scope_id = :project_id)
+)
+AND kind IN (:needed_kinds)
+```
+
+然后按评分排序：
+
+```text
+score =
+  0.35 * scope_match
++ 0.25 * salience
++ 0.15 * tag_match
++ 0.10 * recency_score
++ 0.10 * confirmation_score
++ 0.05 * task_type_match
+- 0.30 * uncertainty_penalty
+- 0.40 * conflict_penalty
+```
+
+其中：
+
+```text
+confirmation_score:
+  explicit = 1.0
+  implicit_repeated = 0.7
+  unconfirmed = 0.2
+  rejected = -inf
+
+status:
+  active only by default
+  candidate only in a separate "possible notes" section
+```
+
+#### Step 5：FTS 检索原始片段
+
+对当前 query 和实体做 FTS：
+
+```sql
+SELECT *
+FROM event_chunks_fts
+WHERE event_chunks_fts MATCH :query
+ORDER BY bm25(event_chunks_fts)
+LIMIT 20;
+```
+
+然后结合：
+
+- project_id；
+- 时间；
+- role=user 优先；
+- 是否被 memory_evidence 引用过；
+- 是否属于当前任务类型。
+
+FTS 结果不要直接注入太多，只选必要证据。
+
+#### Step 6：可选 embedding 检索
+
+如果后续启用 embedding，只作为另一路候选：
+
+```text
+candidates = union(
+  structured_memory_results,
+  fts_results,
+  vector_results
+)
+```
+
+最终仍然用结构化 re-ranker。vector 命中的内容如果没有 active canonical memory 支撑，最多进入“related prior notes”，不能升级为事实。
+
+#### Step 7：组装 prompt
+
+建议分段，不要混成自然语言泥球：
+
+```text
+# Persona Rules
+- Be direct and critical when reviewing architecture.
+- Prefer concrete schemas, retrieval strategies, and tradeoffs.
+
+# Project Context: personaX
+- personaX is a local-first, single-user personal AI wrapper.
+- Execution core is Claude Code via ACP; personaX does not implement its own agent loop.
+- The product boundary is single persona + on-demand skills, not a multi-agent platform.
+
+# Relevant Confirmed Memories
+- [project_decision, 2026-06-21] Memory should treat raw logs as evidence and distilled facts as governed records.
+- [preference, global] User prefers Chinese answers for this discussion.
+
+# Possible Unconfirmed Notes
+- [candidate] User appears to prefer static-first persona evolution, with learned suggestions requiring confirmation.
+
+# Current Task
+...
+```
+
+注意这里：
+
+- confirmed 和 candidate 分开；
+- 每条带 kind/date/scope；
+- 不塞一堆历史聊天原文；
+- prompt 中明确告诉执行核哪些是硬约束，哪些是参考。
+
+---
+
+## 2. 点2：persona 模型
+
+### 我的立场
+
+你的倾向是对的：**混合，但以静态为主；学习只做建议，用户确认后才入库。**
+
+我不只认同，而且认为这是 personaX 这类个人分身的正确默认。原因很简单：
+
+**persona 是身份层，不是推荐系统。**
+
+如果系统偷偷学习并改写人格，会出现几个坏结果：
+
+- 用户不知道 AI 为什么变了；
+- 一次异常对话会污染长期风格；
+- 模型把临时指令当永久偏好；
+- persona 越用越迎合，最后变成偏见放大器；
+- 很难 debug “为什么它今天这么回答”。
+
+个人 AI 分身最重要的是**可控、可解释、可回滚**。所以 persona 不能靠全自动漂移。
+
+---
+
+### persona 数据形态
+
+我建议 persona 分成五类，不要塞进一个大 prompt。
+
+#### 1. Identity
+
+描述这个助手是什么，不是什么。
+
+```json
+{
+  "id": "persona.identity",
+  "kind": "identity",
+  "scope": "global",
+  "status": "active",
+  "content": {
+    "name": "personaX",
+    "role": "personal AI shell over an execution core",
+    "boundaries": [
+      "single-user",
+      "local-first",
+      "not a multi-agent platform",
+      "does not own the agent loop"
+    ]
+  },
+  "source": "user_config",
+  "confirmation": "explicit",
+  "updated_at": "2026-06-21"
+}
+```
+
+#### 2. Communication Style
+
+回答风格。
+
+```json
+{
+  "id": "persona.communication.direct_review",
+  "kind": "communication_style",
+  "scope": "global",
+  "status": "active",
+  "content": {
+    "language": "zh-CN",
+    "tone": "direct, critical, concrete",
+    "avoid": ["客套", "空泛建议", "过度铺垫"],
+    "prefer": ["schema", "流程", "权衡", "明确反驳"]
+  },
+  "source": "user_confirmed",
+  "confirmation": "explicit"
+}
+```
+
+#### 3. Decision Preferences
+
+决策偏好，不是人格形容词。
+
+```json
+{
+  "id": "persona.decision.local_first",
+  "kind": "decision_preference",
+  "scope": "global",
+  "status": "active",
+  "content": {
+    "preference": "Prefer local-first, inspectable, low-operational-complexity designs for personal tools.",
+    "strength": "strong",
+    "applies_to": ["personal_projects", "architecture", "tooling"],
+    "exceptions": ["when cloud dependency is explicitly requested"]
+  },
+  "source": "user_confirmed",
+  "confirmation": "explicit"
+}
+```
+
+#### 4. Workflow Preferences
+
+用户希望怎么协作。
+
+```json
+{
+  "id": "persona.workflow.design_review",
+  "kind": "workflow_preference",
+  "scope": "global",
+  "status": "active",
+  "content": {
+    "when": "design_review",
+    "do": [
+      "start with fatal flaws",
+      "give concrete alternatives",
+      "include data model when relevant",
+      "challenge weak assumptions"
+    ],
+    "dont": [
+      "repeat already locked decisions",
+      "ask for clarification when enough context is provided"
+    ]
+  },
+  "source": "user_confirmed",
+  "confirmation": "explicit"
+}
+```
+
+#### 5. Project-Specific Persona Overrides
+
+persona 不全是 global。有些风格只适用于某个项目。
+
+```json
+{
+  "id": "persona.project.personaX.review_mode",
+  "kind": "project_persona_override",
+  "scope": {
+    "type": "project",
+    "id": "personaX"
+  },
+  "status": "active",
+  "content": {
+    "mode": "senior_architect_review",
+    "priorities": [
+      "memory correctness",
+      "local-first simplicity",
+      "explicit user control",
+      "avoid platform creep"
+    ]
+  },
+  "source": "user_confirmed",
+  "confirmation": "explicit"
+}
+```
+
+---
+
+### persona 不应该怎么表达
+
+我会避免这种写法：
+
+```text
+You are helpful, thoughtful, proactive, deeply understand the user, and always act like their digital twin.
+```
+
+这类 prompt 没有操作性。更糟的是，它鼓励模型过度拟人化和脑补。
+
+也避免：
+
+```json
+{
+  "personality": "INTJ, direct, strategic, builder mindset"
+}
+```
+
+这种标签会产生风格幻觉。模型会开始模仿 stereotype，而不是遵守具体协作规则。
+
+更好的 persona 是**行为约束 + 偏好 + 适用范围 + 例外**。
+
+---
+
+### 演化机制
+
+我建议 persona 演化分四步。
+
+#### Step 1：观察
+
+从交互中提取候选偏好，但只记录为 candidate。
+
+例子：
+
+```json
+{
+  "kind": "preference_candidate",
+  "claim": "User prefers critical architectural review that identifies failure modes before proposing alternatives.",
+  "scope_type": "global",
+  "confidence": 0.8,
+  "evidence": [
+    {
+      "quote": "请保持批判性：能给具体方案就别空谈；对我给的倾向，认同就认同，不认同就直接反驳"
+    }
+  ],
+  "suggested_action": "confirm"
+}
+```
+
+#### Step 2：聚合
+
+不要每次都弹确认。候选可以聚合：
+
+```text
+过去 5 次设计讨论中，你都要求：
+- 先讲风险；
+- 不要客套；
+- 给 schema/流程；
+- 可以直接反驳你的倾向。
+
+是否把这作为“设计评审模式”的默认偏好？
+```
+
+这比每轮记忆都确认更可用。
+
+#### Step 3：确认
+
+确认方式应该支持四种：
+
+```text
+[接受为全局偏好]
+[仅用于 personaX]
+[改写]
+[忽略]
+```
+
+很多偏好其实只在某个上下文成立。比如你在架构评审里要“批判性”，但在写作润色里可能不希望那么硬。
+
+#### Step 4：版本化
+
+persona 配置要版本化。每次确认产生新版本：
+
+```sql
+CREATE TABLE persona_versions (
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  content_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  reason TEXT,
+  source_memory_ids_json TEXT
+);
+```
+
+或者直接用通用 `memory_items` 的历史链，但最好对 persona 有明确版本视图，因为用户会问：
+
+```text
+你为什么现在这样回答？
+最近人格配置改过什么？
+恢复到上周的偏好。
+```
+
+---
+
+### 静态 / 学习 / 混合取舍
+
+#### 纯静态
+
+优点：
+
+- 可控；
+- 可解释；
+- 不污染；
+- 实现简单。
+
+缺点：
+
+- 用户懒得维护；
+- 难捕捉隐性偏好；
+- 长期使用没有“越来越懂我”的感觉。
+
+适合 v0，但产品价值有限。
+
+#### 纯自动学习
+
+我强烈反对。
+
+优点：
+
+- 看起来智能；
+- 初期惊艳；
+- 用户少配置。
+
+缺点：
+
+- 污染不可避免；
+- 很难回滚；
+- 模型会迎合；
+- 临时上下文被长期化；
+- 用户对 persona 失去控制；
+- debug 成本高。
+
+对个人分身尤其危险，因为 persona 是信任边界。
+
+#### 混合，以静态为主，学习只做建议
+
+这是最稳的。
+
+建议比例：
+
+```text
+Core persona:       90% user-authored / user-confirmed
+Project context:    70% confirmed, 30% extracted
+Workflow hints:     60% confirmed, 40% learned suggestions
+Transient behavior: 主要由当前会话指令决定
+```
+
+更准确地说：
+
+- **身份、边界、长期价值观：必须静态/确认。**
+- **沟通风格：可以学习建议，但确认后生效。**
+- **项目事实：可自动提炼，但必须有证据和冲突处理。**
+- **临时任务偏好：不进入长期 persona，最多 session memory。**
+
+你的倾向我会这样改得更硬一点：
+
+```text
+混合，但 persona 层默认只读。
+学习系统只能生成 persona_patch proposal。
+任何会改变全局 persona 行为的 patch，都必须用户确认。
+```
+
+也就是说，学习不是“自动更新 persona”，而是“维护一个建议队列”。
+
+---
+
+### persona patch 格式
+
+可以设计成类似 git diff 的人格补丁。
+
+```json
+{
+  "id": "patch_20260621_001",
+  "target": "persona.workflow.design_review",
+  "operation": "add_or_update",
+  "proposed_change": {
+    "when": "architecture_review",
+    "do": [
+      "lead with fatal flaws",
+      "provide concrete schemas and retrieval strategies",
+      "explicitly challenge user assumptions when needed"
+    ],
+    "dont": [
+      "give generic high-level advice"
+    ]
+  },
+  "evidence": [
+    {
+      "event_id": "evt_123",
+      "quote": "请保持批判性：能给具体方案（schema、检索策略、权衡）就别空谈"
+    }
+  ],
+  "confidence": 0.93,
+  "scope_suggestion": "global",
+  "risk": "May make responses too blunt outside design review contexts.",
+  "status": "pending_user_review"
+}
+```
+
+用户确认后才写入 active persona。
+
+---
+
+### persona 注入策略
+
+不要每次把完整 persona 全塞进去。需要编译成短 prompt。
+
+#### Global core persona
+
+固定短文本，几十到几百 token：
+
+```text
+The user prefers direct, concrete, technically rigorous assistance. Avoid generic reassurance. When reviewing designs, identify failure modes first, then propose simpler alternatives with explicit tradeoffs.
+```
+
+#### Task-specific overlay
+
+根据 task_type 注入：
+
+```text
+For architecture review:
+- Start with likely failure modes.
+- Give schemas and operational flows when relevant.
+- Challenge assumptions directly.
+```
+
+#### Project overlay
+
+例如 personaX：
+
+```text
+For personaX:
+- Treat the execution core as commodity.
+- Preserve local-first, single-user assumptions.
+- Avoid drifting toward multi-agent platform design.
+```
+
+最终 prompt 应该像配置编译结果，不像聊天记录拼贴。
+
+---
+
+## 3. 下一轮需要深挖的问题
+
+**1. 记忆写入权限模型。**
+
+哪些 actor 可以写什么？
+
+```text
+用户：可直接写 confirmed memory
+执行核：只能建议 candidate？
+宿主 Go 服务：可自动写 tool_observed/project_fact？
+前端：是否支持用户手动编辑？
+```
+
+这个不定，记忆系统会很快失控。尤其要明确 Claude Code 是否有权调用“写长期记忆”接口。我建议默认没有，只能 propose。
+
+**2. 项目上下文 capsule 怎么生成和更新。**
+
+personaX 这种工具真正好用，靠的不是全局人格，而是“当前项目 capsule”：
+
+```text
+这个项目是什么？
+已经锁定什么？
+不要再讨论什么？
+当前 open questions 是什么？
+最近做过什么？
+```
+
+下一轮应该专门设计 project capsule 的 schema、刷新策略、冲突处理和 prompt 预算。
+
+**3. 记忆 UI / 审计体验。**
+
+如果没有 UI，确认制会变成负担；如果确认太轻，又会污染。需要设计：
+
+```text
+memory inbox
+conflict queue
+why was this injected?
+edit/reject/scope-change
+restore previous persona version
+```
+
+个人分身的信任感很大部分来自这里，不只是后端检索算法。

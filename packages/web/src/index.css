@@ -1,0 +1,175 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── 浅色基础样式 (agentX visual language) ─────────────────────────────────── */
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* 根字号 14px(默认 16px)→ 所有 rem 的 Tailwind 字号/间距/宽度等比缩到 ~87.5%,整体略缩 */
+  html {
+    font-size: 14px;
+  }
+
+  body {
+    background-color: #f8f9fa;
+    color: #111827;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+  }
+
+  /* 细滚动条 (agentX 5px) */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+  }
+
+  /* 焦点环: gold 点缀 */
+  *:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px #c9a227;
+  }
+
+  /* input / select / textarea 基础 (浅色) */
+  input, textarea, select {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    color: #111827;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 14px;
+    font-family: inherit;
+    transition: border-color 0.15s;
+    outline: none;
+  }
+  input::placeholder, textarea::placeholder {
+    color: #9ca3af;
+  }
+  input:focus, textarea:focus, select:focus {
+    border-color: #c9a227;
+  }
+  input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: #f9fafb;
+  }
+}
+
+/* ── 工具类 (agentX .surface / .surface-subtle) ────────────────────────────── */
+
+@layer utilities {
+  .surface {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+  }
+  .surface-subtle {
+    background: #f8f9fa;
+    border: 1px solid #e5e7eb;
+  }
+}
+
+/* ── 组件类 ─────────────────────────────────────────────────────────────────── */
+
+@layer components {
+  /* gold 渐变文字 */
+  .text-gold-gradient {
+    background: linear-gradient(to right, #d4a827, #a8841e);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+
+  /* 卡片基础 — 浅色白底 */
+  .card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+  }
+
+  /* 主按钮 — dark 底色 (agentX style) */
+  .btn-primary {
+    background: #111827;
+    color: #ffffff;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+    display: inline-flex;
+    align-items: center;
+    font-family: inherit;
+    font-size: 14px;
+  }
+  .btn-primary:hover {
+    background: #1f2937;
+  }
+  .btn-primary:active {
+    transform: scale(0.97);
+  }
+  .btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  /* 幽灵按钮 */
+  .btn-ghost {
+    background: transparent;
+    border: 1px solid #e5e7eb;
+    color: #374151;
+    font-weight: 500;
+    padding: 7px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    font-family: inherit;
+    font-size: 14px;
+  }
+  .btn-ghost:hover {
+    background: #f3f4f6;
+    border-color: #d1d5db;
+    color: #111827;
+  }
+
+  /* 危险按钮 */
+  .btn-danger {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #dc2626;
+    font-weight: 500;
+    padding: 7px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+    font-family: inherit;
+    font-size: 14px;
+  }
+  .btn-danger:hover {
+    background: #fee2e2;
+  }
+  .btn-danger:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
