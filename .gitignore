@@ -8,3 +8,4 @@ packages/server/data/*.db-wal
 packages/server/data/bases/
 .env
 .env.local
+.codex-work/
