@@ -159,13 +159,7 @@ pnpm dev:web
 
 ## 截图
 
-> 截图见 `docs/screenshots/`
-
-![Agent 管理界面](docs/screenshots/agents.png)
-
-![运行轨迹界面](docs/screenshots/run.png)
-
-![Settings 与成本曲线](docs/screenshots/settings.png)
+> 界面截图待补充。本地启动后访问 `http://localhost:5173` 可见：Agents 注册表（含分组子菜单）、Run 运行轨迹（多 Agent 调用树 + Claim 卡 + 用量/占比）、Knowledge 版本化知识库、Settings 接入方式三块与成本曲线等。
 
 ---
 
